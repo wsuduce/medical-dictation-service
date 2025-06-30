@@ -1,0 +1,89 @@
+# .NET Core build outputs
+bin/
+obj/
+out/
+
+# User-specific files
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Visual Studio files
+.vs/
+*.vscode/
+
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# .NET Core
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# NuGet
+*.nupkg
+*.snupkg
+.nuget/
+packages/
+
+# Entity Framework
+*.db
+*.db-shm
+*.db-wal
+
+# Environment files (contains sensitive data)
+.env
+.env.local
+.env.development
+.env.production
+
+# Azure Functions localsettings file
+local.settings.json
+
+# Rider
+.idea/
+
+# Windows image file caches
+Thumbs.db
+ehthumbs.db
+
+# macOS
+.DS_Store
+
+# Temporary files
+*.tmp
+*.temp
+*~
+
+# Log files
+*.log
+
+# Database files (for local development)
+*.sqlite
+*.db3
+
+# Backup files
+*.bak
+
+# JetBrains Rider
+.idea/
+*.sln.iml
+
+# User secrets
+secrets/
+appsettings.local.json 
