@@ -1,0 +1,979 @@
+@page "/transcription"
+@using Microsoft.AspNetCore.SignalR.Client
+@using MedicalDictationService.Models
+@using Microsoft.AspNetCore.Authorization
+@inject IJSRuntime JS
+@inject NavigationManager Navigation
+@attribute [Authorize]
+@implements IAsyncDisposable
+
+<PageTitle>Medical Transcription</PageTitle>
+
+<div class="container-fluid mt-3">
+    <div class="row">
+        <!-- Header Section -->
+        <div class="col-12">
+            <div class="card mb-3">
+                <div class="card-header bg-primary text-white">
+                    <h3 class="mb-0">
+                        <i class="bi bi-mic-fill me-2"></i>Medical Transcription Service
+                    </h3>
+                </div>
+                <div class="card-body">
+                    <div class="row align-items-center">
+                        <div class="col-md-6">
+                            <div class="d-flex align-items-center">
+                                <span class="status-indicator @(_connectionStatus == "Connected" ? "status-connected" : "status-disconnected")"></span>
+                                <span class="badge @(_connectionStatus == "Connected" ? "bg-success" : "bg-danger") me-3">
+                                    @_connectionStatus
+                                </span>
+                                @if (_isRecording)
+                                {
+                                    <span class="badge bg-warning text-dark me-2">
+                                        <i class="bi bi-record-circle-fill me-1"></i>Recording
+                                    </span>
+                                }
+                                @if (_isPaused)
+                                {
+                                    <span class="badge bg-info me-2">
+                                        <i class="bi bi-pause-fill me-1"></i>Paused
+                                    </span>
+                                }
+                            </div>
+                        </div>
+                        <div class="col-md-6 text-end">
+                            <!-- Session Controls -->
+                            <div class="btn-group" role="group">
+                                <!-- TEST BUTTON - Simple counter test -->
+                                <button class="btn btn-primary me-2" @onclick="SimpleTest">
+                                    TEST @_testCount
+                                </button>
+                                <!-- SIGNALR TEST BUTTON -->
+                                <button class="btn btn-info me-2" @onclick="TestSignalR">
+                                    TEST SIGNALR
+                                </button>
+                                <!-- TEST START METHOD -->
+                                <button class="btn btn-warning me-2" @onclick="TestStartMethod">
+                                    TEST START METHOD
+                                </button>
+                                
+                                <button class="btn btn-success" 
+                                        @onclick="StartSession" 
+                                        disabled="@(_isRecording || _connectionStatus != "Connected")">
+                                    <i class="bi bi-play-fill me-1"></i>Start @_clickCount
+                                </button>
+                                <button class="btn btn-warning" 
+                                        @onclick="PauseSession" 
+                                        disabled="@(!_isRecording || _isPaused)">
+                                    <i class="bi bi-pause-fill me-1"></i>Pause
+                                </button>
+                                <button class="btn btn-info" 
+                                        @onclick="ResumeSession" 
+                                        disabled="@(!_isPaused)">
+                                    <i class="bi bi-play-fill me-1"></i>Resume
+                                </button>
+                                <button class="btn btn-danger" 
+                                        @onclick="StopSession" 
+                                        disabled="@(!_isRecording && !_isPaused)">
+                                    <i class="bi bi-stop-fill me-1"></i>Stop
+                                </button>
+                            </div>
+                            
+                            <!-- Debug Information -->
+                            <div class="mt-2">
+                                <small class="text-muted">
+                                    🐛 Debug: Connection=@_connectionStatus | Recording=@_isRecording | 
+                                    HubState=@(_hubConnection?.State.ToString() ?? "null") | 
+                                    ButtonDisabled=@(_isRecording || _connectionStatus != "Connected")
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <!-- Main Transcription Area -->
+        <div class="col-lg-8">
+            <div class="card h-100">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">Live Transcription</h5>
+                    @if (_currentSession != null)
+                    {
+                        <small class="text-muted">
+                            Session: @_currentSession.SessionId.ToString("N")[..8]... | 
+                            Duration: @(_sessionDuration.ToString(@"mm\:ss"))
+                        </small>
+                    }
+                </div>
+                <div class="card-body" style="min-height: 400px; max-height: 600px; overflow-y: auto;">
+                    @if (_transcriptionResults.Any())
+                    {
+                        @foreach (var result in _transcriptionResults.OrderBy(r => r.Timestamp))
+                        {
+                            <div class="transcription-segment mb-3 p-3 border rounded">
+                                <div class="d-flex justify-content-between align-items-start mb-2">
+                                    <small class="text-muted">
+                                        @result.Timestamp.ToString("HH:mm:ss") | 
+                                        Confidence: @((result.Confidence * 100).ToString("F1"))%
+                                        @if (result.DetectedSOAPSection != SOAPSection.None)
+                                        {
+                                            <span class="badge bg-info ms-2">@result.DetectedSOAPSection</span>
+                                        }
+                                    </small>
+                                    @if (result.AudioQuality != AudioQuality.Unknown)
+                                    {
+                                        <span class="badge @GetAudioQualityBadgeClass(result.AudioQuality)">
+                                            @result.AudioQuality
+                                        </span>
+                                    }
+                                </div>
+                                <div class="transcription-text">
+                                    @((MarkupString)HighlightMedicalTerms(result.TranscribedText))
+                                </div>
+                                @if (result.MedicalTerms.Any())
+                                {
+                                    <div class="mt-2">
+                                        <small class="text-muted">Medical Terms: </small>
+                                        @foreach (var term in result.MedicalTerms)
+                                        {
+                                            <span class="badge bg-light text-dark me-1" title="@term.Category">
+                                                @term.Term
+                                            </span>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        <div class="text-center text-muted mt-5">
+                            <i class="bi bi-mic display-1"></i>
+                            <p class="mt-3">Start recording to see transcription results</p>
+                            @if (_connectionStatus != "Connected")
+                            {
+                                <p class="text-danger">
+                                    <i class="bi bi-exclamation-triangle me-1"></i>
+                                    Connection to transcription service is not established
+                                </p>
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="col-lg-4">
+            <!-- Session Information -->
+            <div class="card mb-3">
+                <div class="card-header">
+                    <h6 class="mb-0">Session Information</h6>
+                </div>
+                <div class="card-body">
+                    @if (_currentSession != null)
+                    {
+                        <div class="session-info">
+                            <div class="row">
+                                <div class="col-6">
+                                    <small class="text-muted fw-semibold">Started:</small><br>
+                                    <strong class="text-primary">@_currentSession.StartTime.ToString("HH:mm:ss")</strong>
+                                </div>
+                                <div class="col-6">
+                                    <small class="text-muted fw-semibold">Duration:</small><br>
+                                    <strong class="text-success">@(_sessionDuration.ToString(@"mm\:ss"))</strong>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="session-info">
+                            <div class="row">
+                                <div class="col-6">
+                                    <small class="text-muted fw-semibold">Segments:</small><br>
+                                    <strong class="text-info">@_transcriptionResults.Count</strong>
+                                </div>
+                                <div class="col-6">
+                                    <small class="text-muted fw-semibold">Words:</small><br>
+                                    <strong class="text-warning">@_transcriptionResults.Sum(r => r.TranscribedText.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length)</strong>
+                                </div>
+                            </div>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="text-center text-muted">
+                            <i class="bi bi-clock-history display-6 opacity-50"></i>
+                            <p class="mt-2 mb-0">No active session</p>
+                        </div>
+                    }
+                </div>
+            </div>
+
+            <!-- Medical Terminology Statistics -->
+            <div class="card mb-3">
+                <div class="card-header">
+                    <h6 class="mb-0">Medical Terms Detected</h6>
+                </div>
+                <div class="card-body">
+                    @if (_medicalTermsDetected.Any())
+                    {
+                        @foreach (var category in _medicalTermsDetected.GroupBy(t => t.Category))
+                        {
+                            <div class="mb-2">
+                                <small class="text-muted">@category.Key:</small>
+                                <div>
+                                    @foreach (var term in category.Distinct().Take(5))
+                                    {
+                                        <span class="badge bg-light text-dark me-1 mb-1">@term.Term</span>
+                                    }
+                                    @if (category.Count() > 5)
+                                    {
+                                        <span class="badge bg-secondary">+@(category.Count() - 5) more</span>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        <p class="text-muted mb-0">No medical terms detected yet</p>
+                    }
+                </div>
+            </div>
+
+            <!-- System Status -->
+            <div class="card">
+                <div class="card-header">
+                    <h6 class="mb-0">System Status</h6>
+                </div>
+                <div class="card-body">
+                    <div class="session-info mb-3">
+                        <div class="d-flex align-items-center justify-content-between">
+                            <div class="d-flex align-items-center">
+                                <span class="status-indicator @(_connectionStatus == "Connected" ? "status-connected" : "status-disconnected")"></span>
+                                <small class="text-muted fw-semibold">Connection:</small>
+                            </div>
+                            <span class="badge @(_connectionStatus == "Connected" ? "bg-success" : "bg-danger")">
+                                @_connectionStatus
+                            </span>
+                        </div>
+                    </div>
+                    <div class="session-info mb-3">
+                        <div class="d-flex align-items-center justify-content-between">
+                            <div class="d-flex align-items-center">
+                                <i class="bi bi-cpu me-2 text-info"></i>
+                                <small class="text-muted fw-semibold">Speech Service:</small>
+                            </div>
+                            <span class="badge bg-info">
+                                <i class="bi bi-gear me-1"></i>Demo Mode
+                            </span>
+                        </div>
+                    </div>
+                    @if (!string.IsNullOrEmpty(_lastError))
+                    {
+                        <div class="alert alert-danger d-flex align-items-center mt-3 mb-0" role="alert">
+                            <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                            <small>@_lastError</small>
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private HubConnection? _hubConnection;
+    private string _connectionStatus = "Disconnected";
+    private bool _isRecording = false;
+    private bool _isPaused = false;
+    private string _lastError = "";
+    
+    private TranscriptionSession? _currentSession;
+    private List<TranscriptionResult> _transcriptionResults = new();
+    private List<MedicalTerm> _medicalTermsDetected = new();
+    private TimeSpan _sessionDuration = TimeSpan.Zero;
+    private System.Timers.Timer? _sessionTimer;
+    private int _clickCount = 0;
+    private int _testCount = 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Console.WriteLine("🚀 Initializing Transcription Page...");
+        try
+        {
+            // Initialize SignalR connection
+            Console.WriteLine("🔗 Creating SignalR connection to /transcriptionHub");
+            _hubConnection = new HubConnectionBuilder()
+                .WithUrl(Navigation.ToAbsoluteUri("/transcriptionHub"))
+                .Build();
+
+            Console.WriteLine("📡 Setting up SignalR event handlers...");
+            // Set up event handlers
+            _hubConnection.On<TranscriptionResult>("ReceiveTranscriptionResult", async (result) =>
+            {
+                Console.WriteLine($"📢 SignalR: ReceiveTranscriptionResult - {result.TranscribedText}");
+                _transcriptionResults.Add(result);
+                _medicalTermsDetected.AddRange(result.MedicalTerms);
+                await InvokeAsync(StateHasChanged);
+            });
+
+            _hubConnection.On<AudioQuality>("ReceiveAudioQuality", async (quality) =>
+            {
+                Console.WriteLine($"📢 SignalR: ReceiveAudioQuality - {quality}");
+                // Handle audio quality updates
+                await InvokeAsync(StateHasChanged);
+            });
+
+            _hubConnection.On<string>("ReceiveError", async (error) =>
+            {
+                Console.WriteLine($"📢 SignalR: ReceiveError - {error}");
+                _lastError = error;
+                await InvokeAsync(StateHasChanged);
+            });
+
+            _hubConnection.On<string>("TestResponse", async (message) =>
+            {
+                Console.WriteLine($"🧪 SignalR: TestResponse received: {message}");
+                await JS.InvokeVoidAsync("console.log", "🧪 SignalR: TestResponse received", message);
+                _lastError = $"✅ SignalR Test Success: {message}";
+                await InvokeAsync(StateHasChanged);
+            });
+
+            _hubConnection.On<object>("SessionStarted", async (sessionData) =>
+            {
+                Console.WriteLine("📢 SignalR: SessionStarted event received with data!");
+                Console.WriteLine($"📢 Session data: {sessionData}");
+                await JS.InvokeVoidAsync("console.log", "📢 SignalR: SessionStarted event received!", sessionData);
+                
+                _isRecording = true;
+                _isPaused = false;
+                _transcriptionResults.Clear();
+                _medicalTermsDetected.Clear();
+                _lastError = "✅ Session started successfully!";
+                _currentSession = new TranscriptionSession
+                {
+                    SessionId = Guid.NewGuid(),
+                    StartTime = DateTime.Now,
+                    IsActive = true
+                };
+                StartSessionTimer();
+                Console.WriteLine("📢 SignalR: SessionStarted processing completed");
+                await InvokeAsync(StateHasChanged);
+            });
+
+            _hubConnection.On<object>("SessionPaused", async (sessionData) =>
+            {
+                Console.WriteLine("📢 SignalR: SessionPaused event received with data!");
+                Console.WriteLine($"📢 Pause data: {sessionData}");
+                await JS.InvokeVoidAsync("console.log", "📢 SignalR: SessionPaused event received!", sessionData);
+                
+                _isPaused = true;
+                StopSessionTimer();
+                _lastError = "⏸️ Session paused";
+                await InvokeAsync(StateHasChanged);
+            });
+
+            _hubConnection.On<object>("SessionResumed", async (sessionData) =>
+            {
+                Console.WriteLine("📢 SignalR: SessionResumed event received with data!");
+                Console.WriteLine($"📢 Resume data: {sessionData}");
+                await JS.InvokeVoidAsync("console.log", "📢 SignalR: SessionResumed event received!", sessionData);
+                
+                _isPaused = false;
+                StartSessionTimer();
+                _lastError = "▶️ Session resumed";
+                await InvokeAsync(StateHasChanged);
+            });
+
+            _hubConnection.On<object>("SessionStopped", async (sessionData) =>
+            {
+                Console.WriteLine("📢 SignalR: SessionStopped event received with data!");
+                Console.WriteLine($"📢 Stop data: {sessionData}");
+                await JS.InvokeVoidAsync("console.log", "📢 SignalR: SessionStopped event received!", sessionData);
+                
+                _isRecording = false;
+                _isPaused = false;
+                StopSessionTimer();
+                if (_currentSession != null)
+                {
+                    _currentSession.EndTime = DateTime.Now;
+                    _currentSession.IsActive = false;
+                }
+                _lastError = "⏹️ Session stopped";
+                await InvokeAsync(StateHasChanged);
+            });
+
+            // Start the connection
+            Console.WriteLine("🔌 Attempting to start SignalR connection...");
+            await _hubConnection.StartAsync();
+            _connectionStatus = "Connected";
+            Console.WriteLine("✅ SignalR connection established successfully!");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ SignalR connection failed: {ex.Message}");
+            _connectionStatus = "Failed";
+            _lastError = $"Connection failed: {ex.Message}";
+        }
+
+        Console.WriteLine($"🏁 Initialization completed. Final status: {_connectionStatus}");
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task StartSession()
+    {
+        Console.WriteLine("🟢 START BUTTON CLICKED - Debug Log:");
+        Console.WriteLine($"   Connection Status: {_connectionStatus}");
+        Console.WriteLine($"   Hub Connection State: {_hubConnection?.State}");
+        Console.WriteLine($"   Is Recording: {_isRecording}");
+        Console.WriteLine($"   Is Paused: {_isPaused}");
+        
+        // Add JavaScript console logging that WILL show up in browser
+        await JS.InvokeVoidAsync("console.log", "🟢 START BUTTON CLICKED FROM BLAZOR!");
+        await JS.InvokeVoidAsync("console.log", $"Connection Status: {_connectionStatus}");
+        await JS.InvokeVoidAsync("console.log", $"Hub Connection State: {_hubConnection?.State}");
+        await JS.InvokeVoidAsync("console.log", $"Is Recording: {_isRecording}");
+        
+        // Update UI immediately to show button was clicked
+        _lastError = $"🟢 START BUTTON CLICKED! Connection: {_connectionStatus}, Hub: {_hubConnection?.State}";
+        await InvokeAsync(StateHasChanged);
+        
+        // Add a small delay so user can see the message
+        await Task.Delay(1000);
+        
+        if (_hubConnection?.State == HubConnectionState.Connected)
+        {
+            Console.WriteLine("✅ Hub connection is connected, sending StartTranscription command...");
+            await JS.InvokeVoidAsync("console.log", "✅ Hub connected, sending StartTranscription...");
+            
+            _lastError = "🔄 Sending StartTranscription command to SignalR hub...";
+            await InvokeAsync(StateHasChanged);
+            
+            try
+            {
+                await _hubConnection.SendAsync("StartTranscription");
+                Console.WriteLine("✅ StartTranscription command sent successfully!");
+                await JS.InvokeVoidAsync("console.log", "✅ StartTranscription command sent successfully!");
+                _lastError = "✅ StartTranscription command sent - waiting for hub response...";
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error sending StartTranscription: {ex.Message}");
+                await JS.InvokeVoidAsync("console.error", $"❌ Error sending StartTranscription: {ex.Message}");
+                _lastError = $"❌ Failed to start: {ex.Message}";
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        else
+        {
+            var hubState = _hubConnection?.State.ToString() ?? "null";
+            Console.WriteLine($"❌ Hub connection not ready. State: {hubState}");
+            await JS.InvokeVoidAsync("console.error", $"❌ Hub connection not ready. State: {hubState}");
+            _lastError = $"❌ Cannot start - Hub connection state is {hubState}. Try refreshing the page.";
+            await InvokeAsync(StateHasChanged);
+        }
+        
+        Console.WriteLine("🔚 StartSession method completed");
+        await JS.InvokeVoidAsync("console.log", "🔚 StartSession method completed");
+        _clickCount++;
+    }
+
+    private async Task PauseSession()
+    {
+        if (_hubConnection?.State == HubConnectionState.Connected)
+        {
+            try
+            {
+                await _hubConnection.SendAsync("PauseTranscription");
+            }
+            catch (Exception ex)
+            {
+                _lastError = $"Failed to pause session: {ex.Message}";
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+    }
+
+    private async Task ResumeSession()
+    {
+        if (_hubConnection?.State == HubConnectionState.Connected)
+        {
+            try
+            {
+                await _hubConnection.SendAsync("ResumeTranscription");
+            }
+            catch (Exception ex)
+            {
+                _lastError = $"Failed to resume session: {ex.Message}";
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+    }
+
+    private async Task StopSession()
+    {
+        if (_hubConnection?.State == HubConnectionState.Connected)
+        {
+            try
+            {
+                await _hubConnection.SendAsync("StopTranscription");
+            }
+            catch (Exception ex)
+            {
+                _lastError = $"Failed to stop session: {ex.Message}";
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+    }
+
+    private void StartSessionTimer()
+    {
+        _sessionTimer?.Dispose();
+        _sessionTimer = new System.Timers.Timer(1000);
+        _sessionTimer.Elapsed += async (sender, e) =>
+        {
+            if (_currentSession != null && !_isPaused)
+            {
+                _sessionDuration = DateTime.Now - _currentSession.StartTime;
+                await InvokeAsync(StateHasChanged);
+            }
+        };
+        _sessionTimer.Start();
+    }
+
+    private void StopSessionTimer()
+    {
+        _sessionTimer?.Stop();
+        _sessionTimer?.Dispose();
+        _sessionTimer = null;
+    }
+
+    private string HighlightMedicalTerms(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+        
+        var highlightedText = text;
+        foreach (var term in _medicalTermsDetected.Where(t => text.Contains(t.Term, StringComparison.OrdinalIgnoreCase)))
+        {
+            var pattern = $@"\b{System.Text.RegularExpressions.Regex.Escape(term.Term)}\b";
+            highlightedText = System.Text.RegularExpressions.Regex.Replace(
+                highlightedText, 
+                pattern, 
+                $"<mark class='medical-term-{term.Category.ToString().ToLower()}'>{term.Term}</mark>",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase
+            );
+        }
+        return highlightedText;
+    }
+
+    private string GetAudioQualityBadgeClass(AudioQuality quality)
+    {
+        return quality switch
+        {
+            AudioQuality.Excellent => "bg-success",
+            AudioQuality.Good => "bg-info",
+            AudioQuality.Fair => "bg-warning",
+            AudioQuality.Poor => "bg-danger",
+            _ => "bg-secondary"
+        };
+    }
+
+    private void SimpleTest()
+    {
+        _testCount++;
+        Console.WriteLine($"🟢 SimpleTest method called. Count: {_testCount}");
+    }
+
+    private async Task TestSignalR()
+    {
+        Console.WriteLine("🧪 TEST SIGNALR BUTTON CLICKED");
+        await JS.InvokeVoidAsync("console.log", "🧪 TEST SIGNALR BUTTON CLICKED");
+        
+        if (_hubConnection?.State == HubConnectionState.Connected)
+        {
+            try
+            {
+                Console.WriteLine("🧪 Sending TestConnection command to hub...");
+                await _hubConnection.SendAsync("TestConnection");
+                Console.WriteLine("🧪 TestConnection command sent successfully!");
+                _lastError = "🧪 TestConnection command sent - waiting for response...";
+                await InvokeAsync(StateHasChanged);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error sending TestConnection: {ex.Message}");
+                _lastError = $"❌ TestConnection failed: {ex.Message}";
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        else
+        {
+            Console.WriteLine($"❌ Hub not connected for test. State: {_hubConnection?.State}");
+            _lastError = $"❌ Cannot test - Hub not connected. State: {_hubConnection?.State}";
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task TestStartMethod()
+    {
+        Console.WriteLine("🔥 TEST START METHOD BUTTON CLICKED");
+        await JS.InvokeVoidAsync("console.log", "🔥 TEST START METHOD BUTTON CLICKED");
+        
+        if (_hubConnection?.State == HubConnectionState.Connected)
+        {
+            try
+            {
+                Console.WriteLine("🔥 Sending StartTranscriptionTest command to hub...");
+                await _hubConnection.SendAsync("StartTranscriptionTest");
+                Console.WriteLine("🔥 StartTranscriptionTest command sent successfully!");
+                _lastError = "🔥 StartTranscriptionTest command sent - waiting for response...";
+                await InvokeAsync(StateHasChanged);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error sending StartTranscriptionTest: {ex.Message}");
+                _lastError = $"❌ StartTranscriptionTest failed: {ex.Message}";
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        else
+        {
+            Console.WriteLine($"❌ Hub not connected for test. State: {_hubConnection?.State}");
+            _lastError = $"❌ Cannot test - Hub not connected. State: {_hubConnection?.State}";
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        StopSessionTimer();
+        
+        if (_hubConnection is not null)
+        {
+            await _hubConnection.DisposeAsync();
+        }
+    }
+}
+
+<style>
+    /* Modern Medical UI Styling */
+    :root {
+        --medical-primary: #0070f3;
+        --medical-secondary: #00d4aa;
+        --medical-accent: #ff6b6b;
+        --medical-success: #00c851;
+        --medical-warning: #ffbb33;
+        --medical-danger: #ff4444;
+        --medical-info: #33b5e5;
+        --medical-light: #f8fafc;
+        --medical-dark: #1e293b;
+        --medical-gray-100: #f1f5f9;
+        --medical-gray-200: #e2e8f0;
+        --medical-gray-300: #cbd5e1;
+        --medical-gray-600: #475569;
+        --medical-gray-700: #334155;
+        --medical-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        --medical-shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    }
+
+    .container-fluid {
+        padding: 1.5rem;
+    }
+
+    /* Modern Card Styling */
+    .card {
+        border: none;
+        border-radius: 16px;
+        box-shadow: var(--medical-shadow-lg);
+        background: rgba(255, 255, 255, 0.95);
+        backdrop-filter: blur(10px);
+        transition: all 0.3s ease;
+    }
+
+    .card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+    }
+
+    .card-header {
+        background: linear-gradient(135deg, #0ea5e9, #0284c7);
+        color: white;
+        border: none;
+        border-radius: 16px 16px 0 0 !important;
+        padding: 1.5rem;
+        font-weight: 600;
+        letter-spacing: 0.025em;
+    }
+
+    .card-header h3, .card-header h5, .card-header h6 {
+        margin: 0;
+        color: white;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    }
+
+    .card-body {
+        padding: 1.5rem;
+        background: white;
+        border-radius: 0 0 16px 16px;
+    }
+
+    /* Modern Button Styling */
+    .btn {
+        border: none;
+        border-radius: 10px;
+        padding: 0.75rem 1.5rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        transition: all 0.3s ease;
+        box-shadow: var(--medical-shadow);
+        position: relative;
+        overflow: hidden;
+    }
+
+    .btn:before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: -100%;
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+        transition: left 0.5s;
+    }
+
+    .btn:hover:before {
+        left: 100%;
+    }
+
+    .btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 15px rgba(0, 0, 0, 0.2);
+    }
+
+    .btn-success {
+        background: linear-gradient(135deg, var(--medical-success), #00a644);
+    }
+
+    .btn-warning {
+        background: linear-gradient(135deg, var(--medical-warning), #ff8800);
+    }
+
+    .btn-info {
+        background: linear-gradient(135deg, var(--medical-info), #0099cc);
+    }
+
+    .btn-danger {
+        background: linear-gradient(135deg, var(--medical-danger), #cc0000);
+    }
+
+    /* Status Badges */
+    .badge {
+        font-size: 0.875rem;
+        padding: 0.5rem 1rem;
+        border-radius: 20px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        box-shadow: var(--medical-shadow);
+    }
+
+    .badge.bg-success {
+        background: linear-gradient(135deg, var(--medical-success), #00a644) !important;
+    }
+
+    .badge.bg-danger {
+        background: linear-gradient(135deg, var(--medical-danger), #cc0000) !important;
+    }
+
+    .badge.bg-info {
+        background: linear-gradient(135deg, var(--medical-info), #0099cc) !important;
+    }
+
+    .badge.bg-warning {
+        background: linear-gradient(135deg, var(--medical-warning), #ff8800) !important;
+    }
+
+    /* Transcription Segments */
+    .transcription-segment {
+        background: linear-gradient(145deg, #ffffff, var(--medical-gray-100));
+        border: none;
+        border-radius: 12px;
+        border-left: 5px solid var(--medical-primary);
+        box-shadow: var(--medical-shadow);
+        transition: all 0.3s ease;
+        position: relative;
+        overflow: hidden;
+    }
+
+    .transcription-segment:hover {
+        transform: translateX(8px);
+        box-shadow: var(--medical-shadow-lg);
+        border-left-color: var(--medical-secondary);
+    }
+
+    .transcription-segment::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 5px;
+        height: 100%;
+        background: linear-gradient(180deg, var(--medical-primary), var(--medical-secondary));
+    }
+
+    .transcription-text {
+        font-family: 'Inter', 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-size: 1.125rem;
+        line-height: 1.7;
+        color: var(--medical-gray-700);
+        font-weight: 400;
+    }
+
+    /* Medical Term Highlighting */
+    .medical-term-anatomy {
+        background: linear-gradient(135deg, #dbeafe, #bfdbfe);
+        color: #1e40af;
+        border-radius: 6px;
+        padding: 2px 6px;
+        font-weight: 600;
+        border: 1px solid #93c5fd;
+    }
+
+    .medical-term-symptoms {
+        background: linear-gradient(135deg, #fed7aa, #fdba74);
+        color: #c2410c;
+        border-radius: 6px;
+        padding: 2px 6px;
+        font-weight: 600;
+        border: 1px solid #fb923c;
+    }
+
+    .medical-term-medications {
+        background: linear-gradient(135deg, #e9d5ff, #d8b4fe);
+        color: #7c3aed;
+        border-radius: 6px;
+        padding: 2px 6px;
+        font-weight: 600;
+        border: 1px solid #c084fc;
+    }
+
+    .medical-term-procedures {
+        background: linear-gradient(135deg, #d1fae5, #a7f3d0);
+        color: #047857;
+        border-radius: 6px;
+        padding: 2px 6px;
+        font-weight: 600;
+        border: 1px solid #6ee7b7;
+    }
+
+    .medical-term-conditions {
+        background: linear-gradient(135deg, #fee2e2, #fecaca);
+        color: #dc2626;
+        border-radius: 6px;
+        padding: 2px 6px;
+        font-weight: 600;
+        border: 1px solid #f87171;
+    }
+
+    /* Enhanced Typography */
+    h1, h2, h3, h4, h5, h6 {
+        font-family: 'Inter', 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-weight: 700;
+        letter-spacing: -0.025em;
+    }
+
+    /* Modern Sidebar */
+    .col-lg-4 .card {
+        background: rgba(255, 255, 255, 0.95);
+        border: 1px solid rgba(226, 232, 240, 0.8);
+    }
+
+    .col-lg-4 .card-header {
+        background: linear-gradient(135deg, #1e40af, #1d4ed8);
+    }
+
+    /* Responsive Improvements */
+    @@media (max-width: 768px) {
+        .container-fluid {
+            padding: 1rem;
+        }
+        
+        .btn-group {
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        
+        .btn-group .btn {
+            margin: 0;
+        }
+    }
+
+    /* Loading Animation */
+    @@keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+    }
+
+    .pulse {
+        animation: pulse 2s infinite;
+    }
+
+    /* Status Indicators */
+    .status-indicator {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        display: inline-block;
+        margin-right: 8px;
+        animation: pulse 2s infinite;
+    }
+
+    .status-connected {
+        background: var(--medical-success);
+        box-shadow: 0 0 0 4px rgba(0, 200, 81, 0.2);
+    }
+
+    .status-disconnected {
+        background: var(--medical-danger);
+        box-shadow: 0 0 0 4px rgba(255, 68, 68, 0.2);
+    }
+
+    /* Glass Effect */
+    .glass-effect {
+        background: rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+
+    /* Improved Session Info */
+    .session-info {
+        background: linear-gradient(135deg, var(--medical-light), white);
+        border-radius: 8px;
+        padding: 1rem;
+        margin: 0.5rem 0;
+        border-left: 4px solid var(--medical-secondary);
+    }
+
+    /* Custom Scrollbar */
+    .card-body::-webkit-scrollbar {
+        width: 8px;
+    }
+
+    .card-body::-webkit-scrollbar-track {
+        background: var(--medical-gray-100);
+        border-radius: 4px;
+    }
+
+    .card-body::-webkit-scrollbar-thumb {
+        background: var(--medical-gray-300);
+        border-radius: 4px;
+    }
+
+    .card-body::-webkit-scrollbar-thumb:hover {
+        background: var(--medical-gray-600);
+    }
+</style>

@@ -1,5 +1,7 @@
 using MedicalDictationService.Components;
 using MedicalDictationService.Data;
+using MedicalDictationService.Services;
+using MedicalDictationService.Hubs;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 
@@ -9,8 +11,18 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
+// Add authentication services for Blazor
+builder.Services.AddCascadingAuthenticationState();
+
 // Add Razor Pages for Identity UI
 builder.Services.AddRazorPages();
+
+// Add SignalR for real-time communication
+builder.Services.AddSignalR();
+
+// Add Azure Speech Services and Medical Terminology Services
+builder.Services.AddSingleton<IMedicalTerminologyService, MedicalTerminologyService>();
+builder.Services.AddSingleton<IAzureSpeechService, AzureSpeechService>();
 
 // Add Entity Framework and SQLite
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
@@ -37,9 +49,12 @@ if (!app.Environment.IsDevelopment())
     app.UseExceptionHandler("/Error", createScopeForErrors: true);
     // The default HSTS value is 30 days. You may want to change this for production scenarios, see https://aka.ms/aspnetcore-hsts.
     app.UseHsts();
+    app.UseHttpsRedirection();
 }
-
-app.UseHttpsRedirection();
+else
+{
+    app.UseExceptionHandler("/Error", createScopeForErrors: true);
+}
 
 app.UseStaticFiles();
 
@@ -54,6 +69,9 @@ app.MapRazorComponents<App>()
 
 // Map Identity Razor Pages
 app.MapRazorPages();
+
+// Map SignalR Hub
+app.MapHub<TranscriptionHub>("/transcriptionHub");
 
 // Seed initial data (admin user)
 using (var scope = app.Services.CreateScope())

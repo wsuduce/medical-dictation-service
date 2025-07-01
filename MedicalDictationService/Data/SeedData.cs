@@ -42,5 +42,26 @@ public static class SeedData
         {
             Console.WriteLine("ℹ️  Admin user already exists - skipping creation");
         }
+        
+        // Create a simple test user as backup
+        var testUser = await userManager.FindByEmailAsync("test@test.com");
+        if (testUser == null)
+        {
+            testUser = new IdentityUser
+            {
+                UserName = "test@test.com",
+                Email = "test@test.com", 
+                EmailConfirmed = true
+            };
+            
+            var testResult = await userManager.CreateAsync(testUser, "Test123!");
+            
+            if (testResult.Succeeded)
+            {
+                Console.WriteLine("✅ Test user created successfully!");
+                Console.WriteLine("   Email: test@test.com");
+                Console.WriteLine("   Password: Test123!");
+            }
+        }
     }
 } 
