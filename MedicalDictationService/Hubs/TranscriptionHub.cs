@@ -23,11 +23,7 @@ public class TranscriptionHub : Hub
         _azureSpeechService = azureSpeechService;
         _logger = logger;
         
-        // Subscribe to speech service events
-        _azureSpeechService.TranscriptionReceived += OnTranscriptionReceived;
-        _azureSpeechService.SessionStatusChanged += OnSessionStatusChanged;
-        _azureSpeechService.AudioQualityChanged += OnAudioQualityChanged;
-        _azureSpeechService.ErrorOccurred += OnErrorOccurred;
+        // Note: Event subscriptions moved to OnConnectedAsync to avoid disposal issues
     }
 
     /// <summary>
@@ -51,7 +47,7 @@ public class TranscriptionHub : Hub
     /// <summary>
     /// Starts a new transcription session
     /// </summary>
-    public async Task StartTranscription(string? patientId = null)
+    public async Task StartTranscription()
     {
         _logger.LogInformation("🚀 StartTranscription method called in hub");
         
@@ -68,7 +64,7 @@ public class TranscriptionHub : Hub
             }
 
             _logger.LogInformation($"🔄 Calling AzureSpeechService.StartTranscriptionAsync for user: {userId}");
-            var session = await _azureSpeechService.StartTranscriptionAsync(userId, patientId);
+            var session = await _azureSpeechService.StartTranscriptionAsync(userId, null);
             _logger.LogInformation($"✅ AzureSpeechService returned session: {session.Id} with status: {session.Status}");
             
             // Associate this connection with the session
@@ -288,6 +284,12 @@ public class TranscriptionHub : Hub
         var userId = GetUserId();
         _logger.LogInformation($"Client connected: {Context.ConnectionId}, User: {userId}");
         
+        // Subscribe to speech service events when client connects
+        _azureSpeechService.TranscriptionReceived += OnTranscriptionReceived;
+        _azureSpeechService.SessionStatusChanged += OnSessionStatusChanged;
+        _azureSpeechService.AudioQualityChanged += OnAudioQualityChanged;
+        _azureSpeechService.ErrorOccurred += OnErrorOccurred;
+        
         await Clients.Caller.SendAsync("Connected", new
         {
             ConnectionId = Context.ConnectionId,
@@ -305,6 +307,12 @@ public class TranscriptionHub : Hub
     {
         var userId = GetUserId();
         _logger.LogInformation($"Client disconnected: {Context.ConnectionId}, User: {userId}");
+
+        // Unsubscribe from speech service events when client disconnects
+        _azureSpeechService.TranscriptionReceived -= OnTranscriptionReceived;
+        _azureSpeechService.SessionStatusChanged -= OnSessionStatusChanged;
+        _azureSpeechService.AudioQualityChanged -= OnAudioQualityChanged;
+        _azureSpeechService.ErrorOccurred -= OnErrorOccurred;
 
         // Clean up any active sessions for this connection
         if (_connectionSessions.TryGetValue(Context.ConnectionId, out var sessionId))
@@ -330,6 +338,13 @@ public class TranscriptionHub : Hub
     {
         try
         {
+            // Check if hub is disposed before accessing Clients
+            if (Context.ConnectionAborted.IsCancellationRequested)
+            {
+                _logger.LogDebug("Hub connection cancelled, skipping transcription event");
+                return;
+            }
+
             // Find the connection associated with this session
             var connectionId = _connectionSessions.FirstOrDefault(cs => cs.Value == e.SessionId).Key;
             if (!string.IsNullOrEmpty(connectionId))
@@ -348,6 +363,11 @@ public class TranscriptionHub : Hub
                 });
             }
         }
+        catch (ObjectDisposedException)
+        {
+            // Hub has been disposed, ignore this event
+            _logger.LogDebug("Hub disposed, ignoring transcription event for session {SessionId}", e.SessionId);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error sending transcription result to client");
@@ -358,6 +378,13 @@ public class TranscriptionHub : Hub
     {
         try
         {
+            // Check if hub is disposed before accessing Clients
+            if (Context.ConnectionAborted.IsCancellationRequested)
+            {
+                _logger.LogDebug("Hub connection cancelled, skipping session status change event");
+                return;
+            }
+
             var connectionId = _connectionSessions.FirstOrDefault(cs => cs.Value == e.SessionId).Key;
             if (!string.IsNullOrEmpty(connectionId))
             {
@@ -370,6 +397,11 @@ public class TranscriptionHub : Hub
                 });
             }
         }
+        catch (ObjectDisposedException)
+        {
+            // Hub has been disposed, ignore this event
+            _logger.LogDebug("Hub disposed, ignoring session status change event for session {SessionId}", e.SessionId);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error sending session status change to client");
@@ -380,6 +412,13 @@ public class TranscriptionHub : Hub
     {
         try
         {
+            // Check if hub is disposed before accessing Clients
+            if (Context.ConnectionAborted.IsCancellationRequested)
+            {
+                _logger.LogDebug("Hub connection cancelled, skipping audio quality event");
+                return;
+            }
+
             var connectionId = _connectionSessions.FirstOrDefault(cs => cs.Value == e.SessionId).Key;
             if (!string.IsNullOrEmpty(connectionId))
             {
@@ -391,6 +430,11 @@ public class TranscriptionHub : Hub
                 });
             }
         }
+        catch (ObjectDisposedException)
+        {
+            // Hub has been disposed, ignore this event
+            _logger.LogDebug("Hub disposed, ignoring audio quality event for session {SessionId}", e.SessionId);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error sending audio quality update to client");
@@ -401,6 +445,13 @@ public class TranscriptionHub : Hub
     {
         try
         {
+            // Check if hub is disposed before accessing Clients
+            if (Context.ConnectionAborted.IsCancellationRequested)
+            {
+                _logger.LogDebug("Hub connection cancelled, skipping error event");
+                return;
+            }
+
             var connectionId = _connectionSessions.FirstOrDefault(cs => cs.Value == e.SessionId).Key;
             if (!string.IsNullOrEmpty(connectionId))
             {
@@ -411,6 +462,11 @@ public class TranscriptionHub : Hub
                     Timestamp = e.Timestamp
                 });
             }
+        }
+        catch (ObjectDisposedException)
+        {
+            // Hub has been disposed, ignore this event
+            _logger.LogDebug("Hub disposed, ignoring error event for session {SessionId}", e.SessionId);
         }
         catch (Exception ex)
         {
